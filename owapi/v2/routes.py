@@ -6,8 +6,9 @@ from werkzeug.wrappers import Request, Response
 from werkzeug.exceptions import HTTPException, NotFound
 
 import unidecode
-from kyoukai.blueprint import Blueprint
+from kyoukai import Blueprint
 from kyoukai.asphalt import HTTPRequestContext
+
 from owapi import util
 from owapi import blizz_interface as bz
 from owapi.prestige import PRESTIGE

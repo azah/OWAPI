@@ -1,24 +1,25 @@
 """
-api_v3 routes.
+api_v3s routes.
 """
 import json
+import logging
 
-from werkzeug.wrappers import Response
+from werkzeug.wrappers import Request, Response
 
-from kyoukai.asphalt import HTTPRequestContext
 from kyoukai import Blueprint
+from kyoukai.asphalt import HTTPRequestContext
 
-from owapi.blizz_interface import fetch_all_user_pages
 from owapi.v3.v3_util import with_ratelimit
-from owapi.v3 import parsing
+from owapi.v3s import parsing
 
 from owapi.blizz_interface import get_hero_data
 from owapi.blizz_interface import get_all_heroes
+from owapi.blizz_interface import fetch_all_user_pages
 
-api_v3 = Blueprint("api_v3", prefix="/v3")
+api_v3s = Blueprint("api_v3s", prefix="/v3s")
+zlogger = logging.getLogger("OWAPI")
 
-
-@api_v3.after_request
+@api_v3s.after_request
 async def add__request(ctx: HTTPRequestContext, r: Response):
     # Edit the body, and add a _request.
     if isinstance(r.response, dict):
@@ -31,7 +32,7 @@ async def add__request(ctx: HTTPRequestContext, r: Response):
     return r
 
 
-@api_v3.errorhandler(404)
+@api_v3s.errorhandler(404)
 async def e404(ctx: HTTPRequestContext, exc):
     return json.dumps({"error": 404, "msg": "profile not found"}), \
            404, \
@@ -39,7 +40,7 @@ async def e404(ctx: HTTPRequestContext, exc):
             "Content-Type": "application/json"}
 
 
-@api_v3.route("/u/<battletag>/blob")
+@api_v3s.route("/u/<battletag>/blob")
 @with_ratelimit("blob", timelimit=5, max_reqs=1)
 async def get_blob(ctx: HTTPRequestContext, battletag: str):
     """
@@ -50,10 +51,14 @@ async def get_blob(ctx: HTTPRequestContext, battletag: str):
     built_dict = {}
     for region, result in pages.items():
         if result is None:
-            built_dict[region] = None
             continue
         d = {
-            "heroes": {"playtime": {"competitive": {}, "quickplay": {}}, "stats": {"competitive": {}, "quickplay": {}}},
+            "heroes": {
+                "playtime": {
+                    "competitive": {},
+                    "quickplay": {}
+                }
+            },
             "stats": {},
             "achievements": {}
         }
@@ -61,23 +66,62 @@ async def get_blob(ctx: HTTPRequestContext, battletag: str):
         d["stats"]["quickplay"] = parsing.bl_parse_stats(result)
         d["stats"]["competitive"] = parsing.bl_parse_stats(result, mode="competitive")
 
-        d["heroes"]["stats"]["quickplay"] = parsing.bl_parse_hero_data(result)
-        d["heroes"]["playtime"]["quickplay"] = parsing.bl_parse_all_heroes(result)
+        d["heroes"]["quickplay"] = parsing.bl_parse_hero_data(result)
+        d["heroes"]["competitive"] = parsing.bl_parse_hero_data(result, mode="competitive")
 
-        d["heroes"]["stats"]["competitive"] = parsing.bl_parse_hero_data(result, mode="competitive")
+        d["heroes"]["playtime"]["quickplay"] = parsing.bl_parse_all_heroes(result)
         d["heroes"]["playtime"]["competitive"] = parsing.bl_parse_all_heroes(result, mode="competitive")
 
         d["achievements"] = parsing.bl_parse_achievement_data(result)
 
-        built_dict[region] = d
+        built_dict["region"] = region
+        built_dict["result"] = d
 
     return built_dict
 
 
 get_blob.should_convert = False
 
+@api_v3s.route("/u/<battletag>/stats/quickplay")
+@with_ratelimit("stats")
+async def get_stats_qp(ctx: HTTPRequestContext, battletag: str):
+    """
+    Fetches stats about the user.
+    """
+    pages = await fetch_all_user_pages(ctx, battletag, platform=ctx.request.args.get("platform", "pc"))
 
-@api_v3.route("/u/<battletag>/stats")
+    built_dict = {}
+    for region, result in pages.items():
+        if result is None:
+            continue
+
+        built_dict["result"] = parsing.bl_parse_stats(result)
+        built_dict["region"] = region
+    return built_dict
+
+get_stats_qp.should_convert = False
+
+@api_v3s.route("/u/<battletag>/stats/competitive")
+@with_ratelimit("stats")
+async def get_stats_comp(ctx: HTTPRequestContext, battletag: str):
+    """
+    Fetches stats about the user.
+    """
+    pages = await fetch_all_user_pages(ctx, battletag, platform=ctx.request.args.get("platform", "pc"))
+
+    built_dict = {}
+    for region, result in pages.items():
+        if result is None:
+            continue
+
+        built_dict["result"] = parsing.bl_parse_stats(result, mode="competitive")
+        built_dict["region"] = region
+    return built_dict
+
+get_stats_qp.should_convert = False
+
+
+@api_v3s.route("/u/<battletag>/stats")
 @with_ratelimit("stats")
 async def get_stats(ctx: HTTPRequestContext, battletag: str):
     """
@@ -88,18 +132,17 @@ async def get_stats(ctx: HTTPRequestContext, battletag: str):
     built_dict = {}
     for region, result in pages.items():
         if result is None:
-            built_dict[region] = None
             continue
         d = {
-            "heroes": {"playtime": {"competitive": {}, "quickplay": {}}, "stats": {"competitive": {}, "quickplay": {}}},
-            "stats": {},
-            "achievements": {}
+            "quickplay": {},
+            "competitive": {}
         }
 
-        d["stats"]["quickplay"] = parsing.bl_parse_stats(result)
-        d["stats"]["competitive"] = parsing.bl_parse_stats(result, mode="competitive")
+        d["quickplay"] = parsing.bl_parse_stats(result)
+        d["competitive"] = parsing.bl_parse_stats(result, mode="competitive")
 
-        built_dict[region] = d
+        built_dict["region"] = region
+        built_dict["result"] = d
 
     return built_dict
 
@@ -107,7 +150,9 @@ async def get_stats(ctx: HTTPRequestContext, battletag: str):
 get_stats.should_convert = False
 
 
-@api_v3.route("/u/<battletag>/heroes")
+
+
+@api_v3s.route("/u/<battletag>/heroes")
 @with_ratelimit("stats")
 async def get_heroes(ctx: HTTPRequestContext, battletag: str):
     """
@@ -118,27 +163,25 @@ async def get_heroes(ctx: HTTPRequestContext, battletag: str):
     built_dict = {}
     for region, result in pages.items():
         if result is None:
-            built_dict[region] = None
             continue
         d = {
-            "heroes": {"playtime": {"competitive": {}, "quickplay": {}}, "stats": {"competitive": {}, "quickplay": {}}},
-            "stats": {},
-            "achievements": {}
+            "playtime": {}
         }
 
-        d["heroes"]["stats"]["quickplay"] = parsing.bl_parse_hero_data(result)
-        d["heroes"]["playtime"]["quickplay"] = parsing.bl_parse_all_heroes(result)
+        d["quickplay"] = parsing.bl_parse_hero_data(result)
+        d["competitive"] = parsing.bl_parse_hero_data(result, mode="competitive")
 
-        d["heroes"]["stats"]["competitive"] = parsing.bl_parse_hero_data(result, mode="competitive")
-        d["heroes"]["playtime"]["competitive"] = parsing.bl_parse_all_heroes(result, mode="competitive")
+        d["playtime"]["quickplay"] = parsing.bl_parse_all_heroes(result)
+        d["playtime"]["competitive"] = parsing.bl_parse_all_heroes(result, mode="competitive")
 
-        built_dict[region] = d
+        built_dict["region"] = region
+        built_dict["result"] = d
 
     return built_dict
 
 
 # Separate routes.
-@api_v3.route("/u/<battletag>/heroes/quickplay")
+@api_v3s.route("/u/<battletag>/heroes/quickplay")
 @with_ratelimit("stats")
 async def get_heroes_qp(ctx: HTTPRequestContext, battletag: str):
     """
@@ -146,22 +189,12 @@ async def get_heroes_qp(ctx: HTTPRequestContext, battletag: str):
     """
     pages = await fetch_all_user_pages(ctx, battletag, platform=ctx.request.args.get("platform", "pc"))
 
-    built_dict = {}
+    built_dict = { "result": {} }
     for region, result in pages.items():
         if result is None:
-            built_dict[region] = None
             continue
-        d = {
-            "heroes": {"playtime": {"competitive": {}, "quickplay": {}}, "stats": {"competitive": {}, "quickplay": {}}},
-            "stats": {},
-            "achievements": {}
-        }
-
-        d["heroes"]["stats"]["quickplay"] = parsing.bl_parse_hero_data(result)
-
-        d["heroes"]["playtime"]["quickplay"] = parsing.bl_parse_all_heroes(result)
-
-        built_dict[region] = d
+        built_dict["result"]["heroes"] = parsing.bl_parse_hero_data(result)
+        built_dict["region"] = region
 
     return built_dict
 
@@ -169,7 +202,7 @@ async def get_heroes_qp(ctx: HTTPRequestContext, battletag: str):
 get_heroes_qp.should_convert = False
 
 
-@api_v3.route("/u/<battletag>/heroes/competitive")
+@api_v3s.route("/u/<battletag>/heroes/competitive")
 @with_ratelimit("stats")
 async def get_heroes_comp(ctx: HTTPRequestContext, battletag: str):
     """
@@ -177,22 +210,13 @@ async def get_heroes_comp(ctx: HTTPRequestContext, battletag: str):
     """
     pages = await fetch_all_user_pages(ctx, battletag, platform=ctx.request.args.get("platform", "pc"))
 
-    built_dict = {}
+    built_dict = { "result": {} }
     for region, result in pages.items():
         if result is None:
-            built_dict[region] = None
             continue
-        d = {
-            "heroes": {"playtime": {"competitive": {}, "quickplay": {}}, "stats": {"competitive": {}, "quickplay": {}}},
-            "stats": {},
-            "achievements": {}
-        }
 
-        d["heroes"]["stats"]["competitive"] = parsing.bl_parse_hero_data(result, mode="competitive")
-
-        d["heroes"]["playtime"]["competitive"] = parsing.bl_parse_all_heroes(result, mode="competitive")
-
-        built_dict[region] = d
+        built_dict["result"]["heroes"] = parsing.bl_parse_hero_data(result, mode="competitive")
+        built_dict["region"] = region
 
     return built_dict
 
@@ -200,49 +224,51 @@ async def get_heroes_comp(ctx: HTTPRequestContext, battletag: str):
 get_heroes_comp.should_convert = False
 
 
-@api_v3.route("/u/<battletag>/achievements")
+@api_v3s.route("/u/<battletag>/achievements")
 @with_ratelimit("stats")
 async def get_achievements(ctx: HTTPRequestContext, battletag: str):
     """
-    Fetches hero stats, for competitive.
+    Fetches achievements status.
     """
     pages = await fetch_all_user_pages(ctx, battletag, platform=ctx.request.args.get("platform", "pc"))
 
     built_dict = {}
     for region, result in pages.items():
         if result is None:
-            built_dict[region] = None
             continue
-        d = {
-            "heroes": {"playtime": {"competitive": {}, "quickplay": {}}, "stats": {"competitive": {}, "quickplay": {}}},
-            "stats": {},
-            "achievements": {}
-        }
+        d = { "achievements": {} }
 
         d["achievements"] = parsing.bl_parse_achievement_data(result)
 
-        built_dict[region] = d
+        built_dict["region"] = region
+        built_dict["result"] = d
 
     return built_dict
 
 
-@api_v3.route("/heroes")
-async def get_hero_list(ctx: HTTPRequestContext):
+@api_v3s.route("/heroes")
+async def __get_heroes(ctx: HTTPRequestContext):
     """
     Send hero list.
     """
+    built_dict = {}
+
     parsed = await get_all_heroes(ctx)
     heroes = parsing.bl_get_all_heroes(parsed)
 
-    built_dict = {"Offense": {}, "Defense": {}, "Tank": {}, "Support": {}}
+    d = { "Offense": {}, "Defense": {}, "Tank": {}, "Support": {} }
+
     for hero in heroes:
         _parsed = await get_hero_data(ctx, hero.lower())
         retHero = parsing.bl_find_heroes(_parsed)
-        built_dict[retHero["role"]][hero] = retHero
 
+        d[retHero["role"]][hero] = retHero
+
+    built_dict["result"] = d
     return built_dict
 
-@api_v3.route("/heroes/<hero>")
+
+@api_v3s.route("/heroes/<hero>")
 async def get_hero(ctx: HTTPRequestContext, hero: str):
     """
     Send hero data for selected hero.
@@ -250,7 +276,7 @@ async def get_hero(ctx: HTTPRequestContext, hero: str):
     parsed = await get_hero_data(ctx, hero)
     _hero = parsing.bl_find_heroes(parsed)
     _hero["name"] = hero
-    return _hero
+    return { "result": _hero }
 
 
 get_achievements.should_convert = False
